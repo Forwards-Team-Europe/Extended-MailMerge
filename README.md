@@ -42,7 +42,7 @@ You need two sheets in the same Google Sheets document:
 *Example:*
 | Parameter Name | Value | Email Alias |
 | :--- | :--- | :--- |
-| Event Name | Wieda Summer Hike 2025 | `{{event}}` |
+| Event Name | Wieda Summer Hike 2025 | `{{eventName}}` |
 | Registration Deadline | 23.08.2025 | `{{regDeadline}}` |
 | Organizer Email | info@forwards-team.eu | `{{orgEmail}}` |
 
@@ -56,9 +56,9 @@ You need two sheets in the same Google Sheets document:
 
 - In your Gmail account, compose a new email for each status.
 - **The Subject Line is Critical:** The subject of the draft must **exactly match** the `draftSubject` defined in the script's configuration. You can use global placeholders here.
-    - *Example Subject:* `Registration Confirmation - {{event}}`
+    - *Example Subject:* `Registration Confirmation - {{eventName}}`
 - **Use Placeholders:** Write your email body using both global placeholders (from the `General` sheet) and row-specific placeholders (from the `Mailer` sheet).
-    - *Example Body:* `Hello {{fname}}, thank you for registering for the {{event}}! Your total fee is {{fees}}.`
+    - *Example Body:* `Hello {{fname}}, thank you for registering for the {{eventName}}! Your total fee is {{fees}}.`
 - Save each email as a draft. Do not send it!
 
 ### 3. 💻 Install and Configure the Script
@@ -95,7 +95,7 @@ After reloading your spreadsheet, you will see a new **"Mail Merge Automation"**
 You can use two types of placeholders in your Gmail draft subjects and bodies:
 
 1.  **Global Placeholders:** These pull data from your `General` sheet.
-    - **Format:** `{{alias}}` (e.g., `{{event}}`, `{{regDeadline}}`)
+    - **Format:** `{{alias}}` (e.g., `{{eventName}}`, `{{regDeadline}}`)
     - Defined by the `Email Alias` column in your `General` sheet.
 2.  **Row-Specific Placeholders:** These pull data from the participant's row in the `Mailer` sheet.
     - **Format:** `{{alias}}` or `{{Column Name}}`
