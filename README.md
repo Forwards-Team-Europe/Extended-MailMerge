@@ -37,19 +37,20 @@ You need two sheets in the same Google Sheets document:
 
 - Create a new sheet and name it **`General`**.
 - Set up three columns: `Parameter Name`, `Value`, and `Email Alias`.
-- Populate this sheet with all your event-wide data. The script will read the `Value` (Column C) and make it available using the `Email Alias` (Column D).
+- Populate this sheet with all your event-wide data. The script will read the `Value` (Column B) and make it available using the `Email Alias` (Column C).
 
 *Example:*
 | Parameter Name | Value | Email Alias |
 | :--- | :--- | :--- |
-| Event Name | Wieda Summer Hike 2025 | `{{eventName}}` |
-| Registration Deadline | 23.08.2025 | `{{regDeadline}}` |
-| Organizer Email | info@forwards-team.eu | `{{orgEmail}}` |
+| Event Name | Photography Workshop | `{{eventName}}` |
+| Registration Deadline | 01.01.2021 | `{{regDeadline}}` |
+| Organizer Email | your@email.com | `{{orgEmail}}` |
+| Participation Fees | 120$ | `{{fees}}` |
 
 **B. The `Mailer` Sheet:**
 
 - Create a second sheet and name it **`Mailer`**. This is where your participant data will live (you can use an `ARRAYFORMULA` to pull data from another sheet, like a Google Form response sheet).
-- It must contain a **Status** column (the name can be configured in the script). This column should use Data Validation to create a dropdown menu with your defined statuses (e.g., "Registered", "Confirmed", "Reminded", etc.).
+- It must contain a **Status** column (the name can be configured in the script). This column should use Data Validation to create a dropdown menu with your defined statuses (e.g., "Registered", "Confirmed", "Cancelled", etc.).
 - It must also contain columns for any data you want to use in your emails, like `First name`, `Last name`, `Email`, and `Fees`.
 
 ### 2. ✍️ Create Your Gmail Drafts
@@ -64,7 +65,7 @@ You need two sheets in the same Google Sheets document:
 ### 3. 💻 Install and Configure the Script
 
 1.  **Open the Script Editor:** In your Google Sheet, go to `Extensions` > `Apps Script`.
-2.  **Paste the Code:** Delete any existing code and paste the entire script from the `mail_merge_v2` artifact.
+2.  **Paste the Code:** Delete any existing code and paste the entire script from [`ExtendedMailMerge.gs`](https://github.com/Forwards-Team-Europe/Extended-MailMerge/blob/main/ExtendedMailMerge.gs).
 3.  **Configure the `CONFIG` Block:** Carefully review the `CONFIG` object at the top of the script and ensure all the sheet names, column names, and status mappings match your setup exactly.
 4.  **Save the Project:** Click the "Save project" icon.
 
