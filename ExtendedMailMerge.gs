@@ -171,8 +171,6 @@ function processEmailTrigger(rowObject, status, sheet, rowNum, headers) {
 
     const globalParameters = getGlobalParameters_();
     const emailTemplate = getGmailTemplateFromDrafts_(mapping.draftSubject);
-
-    // **NEW:** The improved function is called here.
     const messageObject = fillInTemplateFromObject_(
       emailTemplate.message,
       rowObject,
@@ -182,16 +180,16 @@ function processEmailTrigger(rowObject, status, sheet, rowNum, headers) {
 
     const cleanRecipient = String(recipient).replace(/\s/g, "");
 
-    GmailApp.sendEmail(
-      cleanRecipient,
-      messageObject.subject,
-      messageObject.text,
-      {
-        htmlBody: messageObject.html,
-        attachments: emailTemplate.attachments,
-        inlineImages: emailTemplate.inlineImages,
-      }
-    );
+    // Switched to MailApp for sending to preserve emoji encoding.
+    // We still use GmailApp to read the draft, but MailApp to send the final composed email.
+    MailApp.sendEmail({
+      to: cleanRecipient,
+      subject: messageObject.subject,
+      body: messageObject.text, // Plain text version for non-HTML clients
+      htmlBody: messageObject.html, // The rich HTML version with emojis
+      attachments: emailTemplate.attachments, // Pass attachments from the draft
+      inlineImages: emailTemplate.inlineImages, // Pass inline images from the draft
+    });
 
     const timestampColIdx = headers.indexOf(mapping.timestampColumn);
     if (timestampColIdx !== -1) {
@@ -351,7 +349,6 @@ function getGmailTemplateFromDrafts_(subject_line) {
 function fillInTemplateFromObject_(template, rowData, globalData, aliases) {
   // Create a unified data object for replacement.
   const replacementData = {};
-
   // 1. Add aliased row data (e.g., "fees" -> value from "Fees" column)
   for (const alias in aliases) {
     const realColumnName = aliases[alias];
@@ -359,26 +356,21 @@ function fillInTemplateFromObject_(template, rowData, globalData, aliases) {
       replacementData[alias] = rowData[realColumnName];
     }
   }
-
   // 2. Add all raw row data (for direct {{Column Name}} access)
   for (const columnName in rowData) {
     replacementData[columnName] = rowData[columnName];
   }
-
   // 3. Add global data, overwriting any previous keys. This gives globals the highest priority.
   for (const globalKey in globalData) {
     replacementData[globalKey] = globalData[globalKey];
   }
-
   // Get the raw subject and body from the template
   let subject = template.subject;
   let htmlBody = template.html;
   let textBody = template.text;
-
   // Iterate through the unified data and perform replacements
   for (const key in replacementData) {
     let value = replacementData[key] || "";
-
     // Special handling for email fields to remove all spaces
     if (key.toLowerCase().includes("email")) {
       value = String(value).replace(/\s/g, "");
@@ -392,7 +384,6 @@ function fillInTemplateFromObject_(template, rowData, globalData, aliases) {
     htmlBody = htmlBody.replace(placeholderRegex, value);
     textBody = textBody.replace(placeholderRegex, value);
   }
-
   // Return the new message object with the replaced content
   return {
     subject: subject,
