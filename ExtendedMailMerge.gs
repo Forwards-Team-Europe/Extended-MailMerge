@@ -5,7 +5,7 @@
  * 1. Automatically sends template emails based on a status change in the "Mailer" sheet.
  * 2. Pulls global parameters (e.g., event name, dates) from a "General" sheet.
  * 3. Includes a debugging tool to inspect data for the last edited row.
- * 4. Provides a utility to send bulk emails to all users with a specific status.
+ * 4. Provides utilities to send bulk emails to all users with a specific status or to a specific list of recipients.
  *
  * Original script inspired by Martin Hawksey, 2022
  * Extended functionalities developed by Morell Alargha, 2025
@@ -83,7 +83,8 @@ function onOpen() {
     .createMenu("Mail Merge Automation")
     .addItem("Setup Edit Trigger", "createSpreadsheetEditTrigger")
     .addSeparator()
-    .addItem("Send Bulk Emails for a Status", "sendBulkEmailForStatus") // New Feature
+    .addItem("Send Bulk Emails for a Status", "sendBulkEmailForStatus")
+    .addItem("Send Bulk Email to Individuals", "sendBulkEmailToIndividuals") // New Feature
     .addSeparator()
     .addItem("Check Sent Status vs. Gmail", "checkGmailSentStatus")
     .addSeparator()
@@ -111,7 +112,7 @@ function createSpreadsheetEditTrigger() {
 }
 
 // =================================================================
-// === NEW: BULK EMAIL SENDER ======================================
+// === BULK EMAIL SENDER FUNCTIONS =================================
 // =================================================================
 
 /**
@@ -119,8 +120,6 @@ function createSpreadsheetEditTrigger() {
  */
 function sendBulkEmailForStatus() {
   const ui = SpreadsheetApp.getUi();
-
-  // Prompt 1: Get the target status
   const statusPrompt = ui.prompt(
     "Step 1: Select Status",
     'Enter the exact status you want to send emails to (e.g., "Confirmed"):',
@@ -129,6 +128,145 @@ function sendBulkEmailForStatus() {
   const statusButton = statusPrompt.getSelectedButton();
   const targetStatus = statusPrompt.getResponseText().trim();
   if (statusButton !== ui.Button.OK || !targetStatus) return;
+
+  const draftPrompt = ui.prompt(
+    "Step 2: Select Draft",
+    "Enter the exact subject of the Gmail draft you want to send:",
+    ui.ButtonSet.OK_CANCEL
+  );
+  const draftButton = draftPrompt.getSelectedButton();
+  const draftSubject = draftPrompt.getResponseText().trim();
+  if (draftButton !== ui.Button.OK || !draftSubject) return;
+
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(
+    CONFIG.MAILER_SHEET
+  );
+  if (!sheet) {
+    ui.alert(
+      "Error",
+      `Sheet with name "${CONFIG.MAILER_SHEET}" was not found.`,
+      ui.ButtonSet.OK
+    );
+    return;
+  }
+
+  try {
+    const allData = sheet.getDataRange().getValues();
+    const headers = allData
+      .shift()
+      .map((h) => (typeof h === "string" ? h.trim() : h));
+    const statusColIdx = headers.indexOf(CONFIG.STATUS_COLUMN);
+    if (statusColIdx === -1) {
+      ui.alert(
+        "Error",
+        `Status column "${CONFIG.STATUS_COLUMN}" not found.`,
+        ui.ButtonSet.OK
+      );
+      return;
+    }
+
+    const recipientsToEmail = allData
+      .filter((row) => row[statusColIdx] === targetStatus)
+      .map((rowDataArray) =>
+        headers.reduce((obj, header, i) => {
+          let cellValue = rowDataArray[i] || "";
+          if (typeof cellValue === "string") cellValue = cellValue.trim();
+          obj[header] = cellValue;
+          return obj;
+        }, {})
+      );
+
+    if (recipientsToEmail.length === 0) {
+      ui.alert(
+        "No Recipients Found",
+        `No users with the status "${targetStatus}" were found.`,
+        ui.ButtonSet.OK
+      );
+      return;
+    }
+
+    ui.alert(
+      "Starting Bulk Send",
+      `Found ${recipientsToEmail.length} recipient(s). The script will now send the emails.`,
+      ui.ButtonSet.OK
+    );
+
+    const globalParameters = getGlobalParameters_();
+    const emailTemplate = getGmailTemplateFromDrafts_(draftSubject);
+    const sentLog = [];
+
+    recipientsToEmail.forEach((rowObject) => {
+      try {
+        const recipient = rowObject[CONFIG.RECIPIENT_COLUMN];
+        if (!recipient) return;
+
+        const messageObject = fillInTemplateFromObject_(
+          emailTemplate.message,
+          rowObject,
+          globalParameters,
+          CONFIG.PLACEHOLDER_ALIASES
+        );
+        MailApp.sendEmail({
+          to: String(recipient).replace(/\s/g, ""),
+          subject: messageObject.subject,
+          body: messageObject.text,
+          htmlBody: messageObject.html,
+          attachments: emailTemplate.attachments,
+          inlineImages: emailTemplate.inlineImages,
+        });
+        sentLog.push(recipient);
+      } catch (e) {
+        Logger.log(
+          `Bulk send failed for ${rowObject[CONFIG.RECIPIENT_COLUMN]}: ${
+            e.message
+          }`
+        );
+      }
+    });
+
+    const logMessage = `Bulk email send complete.\n\nDraft Sent: "${draftSubject}"\nTimestamp: ${new Date().toLocaleString()}\n\nSuccessfully sent to ${
+      sentLog.length
+    } recipient(s):\n\n${sentLog.join("\n")}`;
+    const htmlOutput = HtmlService.createHtmlOutput(
+      `<p>Bulk send complete for status "${targetStatus}".</p><textarea rows="15" cols="80" readonly>${logMessage}</textarea>`
+    )
+      .setWidth(600)
+      .setHeight(350);
+    ui.showModalDialog(htmlOutput, "Bulk Send Log");
+  } catch (e) {
+    ui.alert("An Error Occurred", e.message, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Sends a specified draft email to a user-provided list of recipients.
+ */
+function sendBulkEmailToIndividuals() {
+  const ui = SpreadsheetApp.getUi();
+
+  // Prompt 1: Get the recipient list
+  const emailPrompt = ui.prompt(
+    "Step 1: Enter Recipients",
+    "Enter the email addresses you want to send to, separated by commas or spaces:",
+    ui.ButtonSet.OK_CANCEL
+  );
+  const emailButton = emailPrompt.getSelectedButton();
+  const emailListStr = emailPrompt.getResponseText();
+  if (emailButton !== ui.Button.OK || !emailListStr) return;
+
+  // **MODIFIED:** Use a regular expression to split by commas or any whitespace (spaces, newlines, etc.)
+  const targetEmails = emailListStr
+    .split(/[,\s]+/)
+    .map((email) => email.trim())
+    .filter((email) => email);
+  if (targetEmails.length === 0) {
+    ui.alert(
+      "Error",
+      "No valid email addresses were entered.",
+      ui.ButtonSet.OK
+    );
+    return;
+  }
 
   // Prompt 2: Get the draft subject
   const draftPrompt = ui.prompt(
@@ -146,55 +284,45 @@ function sendBulkEmailForStatus() {
   if (!sheet) {
     ui.alert(
       "Error",
-      `Sheet with name "${CONFIG.MAILER_SHEET}" was not found. Please check the CONFIG.`,
+      `Sheet with name "${CONFIG.MAILER_SHEET}" was not found.`,
       ui.ButtonSet.OK
     );
     return;
   }
 
   try {
-    const dataRange = sheet.getDataRange();
-    const allData = dataRange.getValues();
-    const rawHeaders = allData.shift(); // Get and remove header row
-    const headers = rawHeaders.map((h) =>
-      typeof h === "string" ? h.trim() : h
-    );
-
-    const statusColIdx = headers.indexOf(CONFIG.STATUS_COLUMN);
-    if (statusColIdx === -1) {
+    const allData = sheet.getDataRange().getValues();
+    const headers = allData
+      .shift()
+      .map((h) => (typeof h === "string" ? h.trim() : h));
+    const emailColIdx = headers.indexOf(CONFIG.RECIPIENT_COLUMN);
+    if (emailColIdx === -1) {
       ui.alert(
         "Error",
-        `Status column "${CONFIG.STATUS_COLUMN}" not found.`,
+        `Email column "${CONFIG.RECIPIENT_COLUMN}" not found.`,
         ui.ButtonSet.OK
       );
       return;
     }
 
-    const recipientsToEmail = [];
-    allData.forEach((rowDataArray, index) => {
-      if (rowDataArray[statusColIdx] === targetStatus) {
+    // Create a map of email addresses to their full data row for quick lookup
+    const dataMap = new Map();
+    allData.forEach((rowDataArray) => {
+      const email = rowDataArray[emailColIdx];
+      if (email) {
         const rowObject = headers.reduce((obj, header, i) => {
           let cellValue = rowDataArray[i] || "";
           if (typeof cellValue === "string") cellValue = cellValue.trim();
           obj[header] = cellValue;
           return obj;
         }, {});
-        recipientsToEmail.push(rowObject);
+        dataMap.set(email.trim(), rowObject);
       }
     });
 
-    if (recipientsToEmail.length === 0) {
-      ui.alert(
-        "No Recipients Found",
-        `No users with the status "${targetStatus}" were found.`,
-        ui.ButtonSet.OK
-      );
-      return;
-    }
-
     ui.alert(
       "Starting Bulk Send",
-      `Found ${recipientsToEmail.length} recipient(s) with status "${targetStatus}". The script will now send the emails. This may take a moment.`,
+      `Found data for ${dataMap.size} unique emails. The script will now send emails to your list of ${targetEmails.length} recipient(s).`,
       ui.ButtonSet.OK
     );
 
@@ -202,10 +330,13 @@ function sendBulkEmailForStatus() {
     const emailTemplate = getGmailTemplateFromDrafts_(draftSubject);
     const sentLog = [];
 
-    recipientsToEmail.forEach((rowObject) => {
+    targetEmails.forEach((email) => {
       try {
-        const recipient = rowObject[CONFIG.RECIPIENT_COLUMN];
-        if (!recipient) return; // Skip if no email address
+        const rowObject = dataMap.get(email);
+        if (!rowObject) {
+          Logger.log(`No data found in Mailer sheet for ${email}. Skipping.`);
+          return;
+        }
 
         const messageObject = fillInTemplateFromObject_(
           emailTemplate.message,
@@ -213,32 +344,25 @@ function sendBulkEmailForStatus() {
           globalParameters,
           CONFIG.PLACEHOLDER_ALIASES
         );
-        const cleanRecipient = String(recipient).replace(/\s/g, "");
-
         MailApp.sendEmail({
-          to: cleanRecipient,
+          to: email,
           subject: messageObject.subject,
           body: messageObject.text,
           htmlBody: messageObject.html,
           attachments: emailTemplate.attachments,
           inlineImages: emailTemplate.inlineImages,
         });
-        sentLog.push(cleanRecipient);
+        sentLog.push(email);
       } catch (e) {
-        Logger.log(
-          `Bulk send failed for ${rowObject[CONFIG.RECIPIENT_COLUMN]}: ${
-            e.message
-          }`
-        );
+        Logger.log(`Bulk send failed for ${email}: ${e.message}`);
       }
     });
 
-    // Display confirmation log
     const logMessage = `Bulk email send complete.\n\nDraft Sent: "${draftSubject}"\nTimestamp: ${new Date().toLocaleString()}\n\nSuccessfully sent to ${
       sentLog.length
     } recipient(s):\n\n${sentLog.join("\n")}`;
     const htmlOutput = HtmlService.createHtmlOutput(
-      `<p>Bulk send complete for status "${targetStatus}".</p><textarea rows="15" cols="80" readonly>${logMessage}</textarea>`
+      `<p>Bulk send complete.</p><textarea rows="15" cols="80" readonly>${logMessage}</textarea>`
     )
       .setWidth(600)
       .setHeight(350);
@@ -254,36 +378,25 @@ function sendBulkEmailForStatus() {
 
 function handleEdit(e) {
   if (!e) return;
-
   const sheet = e.source.getActiveSheet();
   const range = e.range;
-
-  if (sheet.getName() !== CONFIG.MAILER_SHEET || range.getRow() <= 1) {
-    return;
-  }
-
+  if (sheet.getName() !== CONFIG.MAILER_SHEET || range.getRow() <= 1) return;
   const rawHeaders = sheet
     .getRange(1, 1, 1, sheet.getLastColumn())
     .getValues()[0];
   const headers = rawHeaders.map((h) => (typeof h === "string" ? h.trim() : h));
-
   const statusColIdx = headers.indexOf(CONFIG.STATUS_COLUMN);
-
   if (range.getColumn() === statusColIdx + 1) {
     const status = e.value;
     const rowDataArray = sheet
       .getRange(range.getRow(), 1, 1, sheet.getLastColumn())
       .getValues()[0];
-
     const rowObject = headers.reduce((obj, header, i) => {
       let cellValue = rowDataArray[i] || "";
-      if (typeof cellValue === "string") {
-        cellValue = cellValue.trim();
-      }
+      if (typeof cellValue === "string") cellValue = cellValue.trim();
       obj[header] = cellValue;
       return obj;
     }, {});
-
     CacheService.getScriptCache().put(
       "last_edited_row",
       JSON.stringify(rowObject),
@@ -297,11 +410,9 @@ function processEmailTrigger(rowObject, status, sheet, rowNum, headers) {
   const mapping = CONFIG.STATUS_MAPPINGS[status];
   if (!mapping) return;
   if (rowObject[mapping.timestampColumn]) return;
-
   try {
     const recipient = rowObject[CONFIG.RECIPIENT_COLUMN];
     if (!recipient) throw new Error("Recipient email address is missing.");
-
     const globalParameters = getGlobalParameters_();
     const emailTemplate = getGmailTemplateFromDrafts_(mapping.draftSubject);
     const messageObject = fillInTemplateFromObject_(
@@ -310,9 +421,7 @@ function processEmailTrigger(rowObject, status, sheet, rowNum, headers) {
       globalParameters,
       CONFIG.PLACEHOLDER_ALIASES
     );
-
     const cleanRecipient = String(recipient).replace(/\s/g, "");
-
     MailApp.sendEmail({
       to: cleanRecipient,
       subject: messageObject.subject,
@@ -321,7 +430,6 @@ function processEmailTrigger(rowObject, status, sheet, rowNum, headers) {
       attachments: emailTemplate.attachments,
       inlineImages: emailTemplate.inlineImages,
     });
-
     const timestampColIdx = headers.indexOf(mapping.timestampColumn);
     if (timestampColIdx !== -1) {
       sheet.getRange(rowNum, timestampColIdx + 1).setValue(new Date());
@@ -350,7 +458,6 @@ function clearCache() {
 function debugLastEdit() {
   const ui = SpreadsheetApp.getUi();
   const lastRowJSON = CacheService.getScriptCache().get("last_edited_row");
-
   if (!lastRowJSON) {
     ui.alert(
       "No Edit Data Found",
@@ -359,15 +466,12 @@ function debugLastEdit() {
     );
     return;
   }
-
   const rowData = JSON.parse(lastRowJSON);
   const globalData = getGlobalParameters_();
-
   let debugText = "--- GLOBAL DATA (from General sheet) ---\n";
   debugText += JSON.stringify(globalData, null, 2);
   debugText += "\n\n--- ROW DATA (from last edited row) ---\n";
   debugText += JSON.stringify(rowData, null, 2);
-
   const htmlOutput = HtmlService.createHtmlOutput(
     `<p>Data for the last edited row. Check that "Fees" exists in the ROW DATA below with the correct value.</p><textarea rows="20" cols="80" readonly>${debugText}</textarea>`
   )
@@ -376,46 +480,33 @@ function debugLastEdit() {
   ui.showModalDialog(htmlOutput, "Last Edit Debug Data");
 }
 
-/**
- * Fetches global parameters from the "General" sheet and caches them.
- */
-
 function getGlobalParameters_() {
   const cache = CacheService.getScriptCache();
   const cached = cache.get("global_parameters");
   if (cached) return JSON.parse(cached);
-
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const generalSheet = ss.getSheetByName(CONFIG.GENERAL_SHEET);
   if (!generalSheet) return {};
-
   const data = generalSheet
     .getRange(2, 2, generalSheet.getLastRow() - 1, 3)
     .getValues();
   const globalParams = {};
-
   data.forEach((row) => {
     let value = row[1];
     const alias = row[2];
-
     if (alias && typeof alias === "string" && value !== "") {
       const cleanedAlias = alias.replace(/[{}]+/g, "").trim();
       if (cleanedAlias) {
-        if (typeof value === "string") {
+        if (typeof value === "string")
           value = value.replace(/\u00A0/g, " ").trim();
-        }
         globalParams[cleanedAlias] = value;
       }
     }
   });
-
   cache.put("global_parameters", JSON.stringify(globalParams), 21600);
   return globalParams;
 }
 
-/**
- * Get a Gmail draft message by matching the subject line.
- */
 function getGmailTemplateFromDrafts_(subject_line) {
   try {
     const drafts = GmailApp.getDrafts();
@@ -451,7 +542,6 @@ function getGmailTemplateFromDrafts_(subject_line) {
       `Oops - can't find or process Gmail draft with subject "${subject_line}". Error: ${e.message}`
     );
   }
-
   function subjectFilter_(subject_line) {
     return function (element) {
       if (element.getMessage().getSubject() === subject_line) {
@@ -461,65 +551,34 @@ function getGmailTemplateFromDrafts_(subject_line) {
   }
 }
 
-/**
- * **REWRITTEN FUNCTION**
- * Fills a template by directly replacing placeholders in the subject and body strings.
- * This method is robust and preserves emojis, HTML formatting, and special characters.
- *
- * @param {object} template The message object {subject, text, html}.
- * @param {object} rowData The data object for the current row.
- * @param {object} globalData The global parameters from the "General" sheet.
- * @param {object} aliases The mapping of short names to full column names.
- * @return {object} A new message object with all placeholders replaced with data.
- */
 function fillInTemplateFromObject_(template, rowData, globalData, aliases) {
-  // Create a unified data object for replacement.
   const replacementData = {};
-  // 1. Add aliased row data (e.g., "fees" -> value from "Fees" column)
   for (const alias in aliases) {
     const realColumnName = aliases[alias];
-    if (rowData.hasOwnProperty(realColumnName)) {
+    if (rowData.hasOwnProperty(realColumnName))
       replacementData[alias] = rowData[realColumnName];
-    }
   }
-  // 2. Add all raw row data (for direct {{Column Name}} access)
   for (const columnName in rowData) {
     replacementData[columnName] = rowData[columnName];
   }
-  // 3. Add global data, overwriting any previous keys. This gives globals the highest priority.
   for (const globalKey in globalData) {
     replacementData[globalKey] = globalData[globalKey];
   }
-  // Get the raw subject and body from the template
   let subject = template.subject;
   let htmlBody = template.html;
   let textBody = template.text;
-  // Iterate through the unified data and perform replacements
   for (const key in replacementData) {
     let value = replacementData[key] || "";
-    // Special handling for email fields to remove all spaces
     if (key.toLowerCase().includes("email")) {
       value = String(value).replace(/\s/g, "");
     }
-
-    // Create a regular expression to replace all instances of the placeholder
-    // The 'g' flag ensures all occurrences are replaced.
     const placeholderRegex = new RegExp("{{" + key + "}}", "g");
-
     subject = subject.replace(placeholderRegex, value);
     htmlBody = htmlBody.replace(placeholderRegex, value);
     textBody = textBody.replace(placeholderRegex, value);
   }
-  // Return the new message object with the replaced content
-  return {
-    subject: subject,
-    html: htmlBody,
-    text: textBody,
-  };
+  return { subject: subject, html: htmlBody, text: textBody };
 }
-// =================================================================
-// === GMAIL SENT STATUS CHECKER (No changes needed here) ==========
-// =================================================================
 
 function checkGmailSentStatus() {
   const ui = SpreadsheetApp.getUi();
@@ -531,7 +590,6 @@ function checkGmailSentStatus() {
   const columnButton = columnPrompt.getSelectedButton();
   const columnToCheck = columnPrompt.getResponseText();
   if (columnButton !== ui.Button.OK || !columnToCheck) return;
-
   const subjectPrompt = ui.prompt(
     "Step 2: Specify Subject",
     'Enter the exact subject line of the sent email you want to search for (e.g., "Payment Confirmation - Wieda Summer Hike 2025"):',
@@ -540,7 +598,6 @@ function checkGmailSentStatus() {
   const subjectButton = subjectPrompt.getSelectedButton();
   const subjectToCheck = subjectPrompt.getResponseText();
   if (subjectButton !== ui.Button.OK || !subjectToCheck) return;
-
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(
     CONFIG.MAILER_SHEET
   );
@@ -552,7 +609,6 @@ function checkGmailSentStatus() {
     );
     return;
   }
-
   try {
     const headers = sheet
       .getRange(1, 1, 1, sheet.getLastColumn())
@@ -566,7 +622,6 @@ function checkGmailSentStatus() {
       );
       return;
     }
-
     const emailData = sheet
       .getRange(2, emailColIdx + 1, sheet.getLastRow() - 1, 1)
       .getValues();
@@ -585,28 +640,22 @@ function checkGmailSentStatus() {
       );
       return;
     }
-
     ui.alert(
       "Starting Check",
       `Checking ${emailsToCheck.length} unique email addresses for the subject "${subjectToCheck}" from the last two months. This may take some time...`,
       ui.ButtonSet.OK
     );
-
     const twoMonthsAgo = new Date();
     twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
     const dateQuery = `${twoMonthsAgo.getFullYear()}/${
       twoMonthsAgo.getMonth() + 1
     }/${twoMonthsAgo.getDate()}`;
-
     const notSentList = [];
     emailsToCheck.forEach((email) => {
       const query = `to:(${email}) subject:("${subjectToCheck}") after:${dateQuery}`;
       const threads = GmailApp.search(query, 0, 1);
-      if (threads.length === 0) {
-        notSentList.push(email);
-      }
+      if (threads.length === 0) notSentList.push(email);
     });
-
     if (notSentList.length === 0) {
       ui.alert(
         "All Clear!",
