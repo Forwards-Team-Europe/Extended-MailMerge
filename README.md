@@ -123,4 +123,4 @@ The script is smart enough to use data from both sheets to compose the final ema
 
 ## 📜 License
 
-This project is licensed under the Apache License, Version 2.0. The original concept is credited to Martin Hawksey.
+This project is licensed under the Apache License, Version 2.0. The original concept is credited to [Martin Hawksey's mail-merge automation sample](https://developers.google.com/apps-script/samples/automations/mail-merge).
