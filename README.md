@@ -4,6 +4,18 @@ A Google Apps Script project for managing event registrations in Google Sheets. 
 
 ---
 
+## 🎯 Who is this for?
+
+This platform is designed for event organizers who are currently managing their operations manually and are looking for a more efficient, automated solution. It is ideal for you if:
+
+- **You rely on Google Forms:** You currently use Google Forms to collect event registrations.
+- **You manage emails manually:** You use Gmail to send emails and rely on standardized drafts for communication.
+- **You have complex pricing:** You offer different price tiers for your participants (e.g., discounts for families, students, or early birds).
+- **You need personalized bulk messaging:** You want to send bulk emails to your participants but need them to include personalized details.
+- **You track status manually:** You are currently tracking participant statuses (e.g., cancellations, delayed payments) manually and need a better way to manage these changes.
+
+---
+
 ## ✨ Key Features
 
 - **✍️ Status-Driven Automation:** Automatically sends a specific email when a participant's status is changed (e.g., from "Registered" to "Confirmed").
