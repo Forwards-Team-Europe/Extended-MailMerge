@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        padding: 20px;
+        color: #333;
+        margin: 0;
+      }
+      .upload-container {
+        display: flex;
+        flex-direction: column;
+        gap: 15px;
+      }
+      input[type="file"] {
+        padding: 10px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        background: #f8f9fa;
+      }
+      .btn {
+        padding: 10px 16px;
+        background-color: #1a73e8;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background-color 0.2s;
+      }
+      .btn:hover { background-color: #1557b0; }
+      .btn:disabled {
+        background-color: #dadce0;
+        color: #80868b;
+        cursor: not-allowed;
+      }
+      .btn-close {
+        background-color: #5f6368;
+        margin-top: 8px;
+      }
+      .btn-close:hover { background-color: #3c4043; }
+      #status-msg {
+        font-size: 0.9em;
+        margin-top: 10px;
+        font-weight: 500;
+      }
+      .error { color: #d93025; }
+      .success { color: #1e8e3e; }
+      .loading { color: #f29900; }
+
+      /* --- Import Statistics Panel --- */
+      .stats-panel {
+        display: none;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .stats-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 1.05em;
+        font-weight: 600;
+        color: #1e8e3e;
+        padding-bottom: 8px;
+        border-bottom: 1px solid #e8eaed;
+      }
+      .stats-header .icon { font-size: 1.3em; }
+      .stats-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 10px;
+      }
+      .stat-card {
+        background: #f8f9fa;
+        border: 1px solid #e8eaed;
+        border-radius: 8px;
+        padding: 12px 10px;
+        text-align: center;
+        transition: box-shadow 0.2s;
+      }
+      .stat-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+      .stat-value {
+        font-size: 1.6em;
+        font-weight: 700;
+        line-height: 1.2;
+      }
+      .stat-label {
+        font-size: 0.75em;
+        color: #5f6368;
+        margin-top: 4px;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+      }
+      .stat-total .stat-value { color: #1a73e8; }
+      .stat-added .stat-value { color: #1e8e3e; }
+      .stat-skipped .stat-value { color: #e8710a; }
+    </style>
+  </head>
+  <body>
+    <!-- Upload View -->
+    <div class="upload-container" id="upload-view">
+      <label for="csvFileInput">Select CAMT V8 CSV Export:</label>
+      <input type="file" id="csvFileInput" accept=".csv" />
+      <button class="btn" id="uploadBtn" onclick="executeUpload()">Upload & Process</button>
+      <div id="status-msg"></div>
+    </div>
+
+    <!-- Statistics View (shown after successful import) -->
+    <div class="stats-panel" id="stats-view">
+      <div class="stats-header">
+        <span class="icon">✅</span> Import Complete
+      </div>
+      <div class="stats-grid">
+        <div class="stat-card stat-total">
+          <div class="stat-value" id="stat-total">0</div>
+          <div class="stat-label">Total Rows</div>
+        </div>
+        <div class="stat-card stat-added">
+          <div class="stat-value" id="stat-added">0</div>
+          <div class="stat-label">Imported</div>
+        </div>
+        <div class="stat-card stat-skipped">
+          <div class="stat-value" id="stat-skipped">0</div>
+          <div class="stat-label">Skipped</div>
+        </div>
+      </div>
+      <button class="btn btn-close" onclick="google.script.host.close()">Close</button>
+    </div>
+
+    <script>
+      function executeUpload() {
+        const fileInput = document.getElementById('csvFileInput');
+        const btn = document.getElementById('uploadBtn');
+
+        if (!fileInput.files || fileInput.files.length === 0) {
+          setStatus('Please select a valid CSV file.', 'error');
+          return;
+        }
+
+        const file = fileInput.files[0];
+        const reader = new FileReader();
+
+        btn.disabled = true;
+        setStatus('Reading file locally...', 'loading');
+
+        reader.onload = function(e) {
+          const csvContent = e.target.result;
+          setStatus('Pushing to server & deduplicating...', 'loading');
+          
+          google.script.run
+            .withSuccessHandler(function(response) {
+              if (response.error) {
+                setStatus('Execution Failed: ' + response.error, 'error');
+                btn.disabled = false;
+              } else {
+                showStats(response.total, response.ignored, response.added);
+              }
+            })
+            .withFailureHandler(function(err) {
+              setStatus('Server Error: ' + err.message, 'error');
+              btn.disabled = false;
+            })
+            .processCsvUpload(csvContent);
+        };
+        
+        // CRITICAL: Force ISO-8859-1 encoding to handle German characters/umlauts correctly
+        reader.readAsText(file, 'ISO-8859-1');
+      }
+
+      function showStats(total, skipped, added) {
+        // Hide upload form, show statistics panel
+        document.getElementById('upload-view').style.display = 'none';
+        var panel = document.getElementById('stats-view');
+        panel.style.display = 'flex';
+
+        // Populate values
+        document.getElementById('stat-total').textContent = total;
+        document.getElementById('stat-added').textContent = added;
+        document.getElementById('stat-skipped').textContent = skipped;
+      }
+
+      function setStatus(message, state) {
+        const el = document.getElementById('status-msg');
+        el.textContent = message;
+        el.className = state;
+      }
+    </script>
+  </body>
+</html>
