@@ -1,0 +1,17 @@
+=ARRAYFORMULA(
+  LET(
+    rawData, FILTER(Import_List!C4:P, Import_List!C4:C <> ""),
+    dates, TEXT(INDEX(rawData, 0, 1), "dd.mm.yyyy"),
+    amounts, VALUE(SUBSTITUTE(SUBSTITUTE(INDEX(rawData, 0, 13), ".", ""), ",", ".")),
+    currencies, INDEX(rawData, 0, 14),
+    payees, INDEX(rawData, 0, 10),
+    descriptions, INDEX(rawData, 0, 3),
+    references, INDEX(rawData, 0, 6),
+    ibans, INDEX(rawData, 0, 11),
+    bics, INDEX(rawData, 0, 12),
+    categories, IF(REGEXMATCH(INDEX(rawData, 0, 2), "GUTSCHRIFT"), "Income", "Expense"),
+    headers, {"Date", "Amount", "Currency", "Payee", "Description", "Reference", "IBAN", "BIC", "Category"},
+    body, HSTACK(dates, amounts, currencies, payees, descriptions, references, ibans, bics, categories),    
+    VSTACK(headers, body)
+  )
+)

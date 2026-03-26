@@ -174,6 +174,9 @@ function processCsvUpload(csvText) {
       }
     }
 
+    // Force recalculation so dependent ARRAYFORMULA sheets pick up new data immediately.
+    SpreadsheetApp.flush();
+
     // -------------------------------------------------------------
     // 6. Cleanup Staging — delete the sheet entirely to declutter
     // -------------------------------------------------------------
