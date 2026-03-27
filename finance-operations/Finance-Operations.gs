@@ -142,7 +142,9 @@ function processCsvUpload(csvText) {
     const startIndex = hasLedgerData ? 1 : 0;
 
     for (let i = startIndex; i < stagingData.length; i++) {
-      const rowKey = stagingData[i].map(normalizeForHash_).join(CONFIG.DELIMITER);
+      const rowKey = stagingData[i]
+        .map(normalizeForHash_)
+        .join(CONFIG.DELIMITER);
 
       if (existingKeys.has(rowKey)) {
         duplicatesIgnored++;
@@ -177,6 +179,9 @@ function processCsvUpload(csvText) {
     // Force recalculation so dependent ARRAYFORMULA sheets pick up new data immediately.
     SpreadsheetApp.flush();
 
+    // Re-set all cross-sheet formulas referencing Import_List so Sheets invalidates its cache.
+    refreshDependentFormulas_(ss);
+
     // -------------------------------------------------------------
     // 6. Cleanup Staging — delete the sheet entirely to declutter
     // -------------------------------------------------------------
@@ -193,6 +198,38 @@ function processCsvUpload(csvText) {
   }
 }
 
+/**
+ * Scans every sheet in the spreadsheet (except system sheets) and re-sets any
+ * formula cell that references Import_List. This forces Google Sheets to
+ * invalidate its ARRAYFORMULA cache, which is NOT triggered by setValues() alone.
+ *
+ * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} ss
+ */
+function refreshDependentFormulas_(ss) {
+  const SKIP_SHEETS = new Set([CONFIG.LEDGER_SHEET, CONFIG.STAGING_SHEET]);
+
+  ss.getSheets()
+    .filter((sheet) => !SKIP_SHEETS.has(sheet.getName()))
+    .forEach((sheet) => {
+      const dataRange = sheet.getDataRange();
+      const formulas = dataRange.getFormulas(); // 2D array — empty string if not a formula
+
+      formulas.forEach((row, r) => {
+        row.forEach((formula, c) => {
+          if (
+            formula &&
+            formula.toUpperCase().includes(CONFIG.LEDGER_SHEET.toUpperCase())
+          ) {
+            // Re-writing the formula in-place forces a full recalculation.
+            const cell = dataRange.getCell(r + 1, c + 1);
+            cell.setFormula(formula);
+          }
+        });
+      });
+    });
+
+  SpreadsheetApp.flush(); // Commit all formula re-writes synchronously.
+}
 
 /**
  * DIAGNOSTIC TOOL: Run this manually from the editor if duplicates still occur.
