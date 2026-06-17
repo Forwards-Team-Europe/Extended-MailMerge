@@ -133,6 +133,27 @@ The script is smart enough to use data from both sheets to compose the final ema
 
 ---
 
+## 📬 Emails Show in "Sent" but Never Arrive (Deliverability)
+
+If your messages appear in Gmail's **Sent** folder but recipients never receive them (not even in Spam), the script did its job — Google **accepted and sent** the message, and the **receiving server then dropped or rejected it.** This is almost always a **sender-authentication** problem with your domain, *not* a script bug. No code change can fix it; it must be fixed in DNS / Google Admin.
+
+**Fix it in this order:**
+
+1.  **Verify authentication.** Send one merge email to a Gmail address you own → open it → **⋮ → Show original**. You must see **SPF: PASS**, **DKIM: PASS**, and **DMARC: PASS**. (Or send to `check-auth@verifier.port25.com` for a full report.) Any `FAIL`/`none` is your culprit.
+2.  **Enable DKIM** in Google Admin: *Apps → Google Workspace → Gmail → Authenticate email*. Generate the key and add the published `TXT` record to your DNS. **Workspace does not enable real DKIM by default** — this is the most common cause.
+3.  **Check SPF.** Your domain's DNS needs a `TXT` record containing `include:_spf.google.com`.
+4.  **Check DMARC.** A `p=reject` or `p=quarantine` policy will silently drop unauthenticated mail. Make sure SPF + DKIM pass *before* tightening DMARC.
+5.  **Watch volume & reputation.** Since Feb 2024, Gmail/Yahoo require bulk senders to pass SPF + DKIM + DMARC. Sudden large sends from a "cold" domain also hurt. Sending limits are fixed by Google (Workspace **1,500/day**, consumer Gmail **500/day**) and **cannot be raised by the script**. For higher volume or reliable inbox placement, use a dedicated service (Brevo, SendGrid, Amazon SES).
+
+**Built-in tools to diagnose & confirm sending:**
+
+- **Send Log sheet** — every send is recorded in a `Send Log` tab with `SENT` / `FAILED` / `SKIPPED` status and the exact error. No more silent failures.
+- **Scan for Bounced Emails** — scans your inbox for delivery-failure notices and flags exactly which participants hard-bounced (logged as `BOUNCED`). This is your real "did it arrive?" check. *Note: silent spam-foldering and DKIM/DMARC drops do not bounce, so they won't appear here — use step 1 above for those.*
+- **Check Email Quota** — shows how many sends you have left today.
+- **Set Sender Name & Reply-To** — sets a friendly `From` name and a real reply-to address, which improves recognition and inbox placement.
+
+---
+
 ## 📜 License
 
 This project is licensed under the Apache License, Version 2.0. The original concept is credited to [Martin Hawksey's mail-merge automation sample](https://developers.google.com/apps-script/samples/automations/mail-merge).

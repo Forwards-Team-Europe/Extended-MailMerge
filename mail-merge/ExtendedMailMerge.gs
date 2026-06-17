@@ -10,6 +10,7 @@
  */
 
 const CONFIG_KEY = "MAIL_MERGE_CONFIG";
+const LOG_SHEET = "Send Log";
 
 // =================================================================
 // === CONFIGURATION MANAGEMENT ====================================
@@ -37,14 +38,17 @@ function onOpen() {
     .createMenu("Mail Merge Automation")
     .addItem("1. Master Setup (Run First)", "masterSetup")
     .addItem("2. Add Auto-Trigger Mapping", "addTriggerMapping")
-    .addItem("3. View Current Config", "viewConfig")
+    .addItem("3. Set Sender Name & Reply-To", "setSenderIdentity")
+    .addItem("4. View Current Config", "viewConfig")
     .addSeparator()
     .addItem("Enable Automation Trigger", "createSpreadsheetEditTrigger")
     .addSeparator()
     .addItem("Send Bulk Emails for a Status", "sendBulkEmailForStatus")
     .addItem("Send Bulk Email to Individuals", "sendBulkEmailToIndividuals")
     .addSeparator()
+    .addItem("Check Email Quota", "checkQuota")
     .addItem("Check Sent Status vs. Gmail", "checkGmailSentStatus")
+    .addItem("Scan for Bounced Emails", "scanForBounces")
     .addSeparator()
     .addItem("Debug Last Edit", "debugLastEdit")
     .addItem("Clear Cache (Global Params)", "clearCache")
@@ -148,6 +152,38 @@ function addTriggerMapping() {
   ui.alert(
     "Success",
     `Mapping added!\n\nWhen status becomes: "${status}"\nSend Draft: "${draftSubject}"\nTimestamp in: "${timestampColumn || "None"}"`,
+    ui.ButtonSet.OK,
+  );
+}
+
+function setSenderIdentity() {
+  const ui = SpreadsheetApp.getUi();
+  let config = getSavedConfig_();
+  if (!config || !config.MAILER_SHEET) {
+    ui.alert("Please run '1. Master Setup' first.");
+    return;
+  }
+
+  let res = ui.prompt(
+    "Sender Name",
+    "Enter the name recipients should see in the 'From' field (e.g., 'Forwards Team Europe Hikes'). Leave blank to keep the default account name:",
+    ui.ButtonSet.OK_CANCEL,
+  );
+  if (res.getSelectedButton() !== ui.Button.OK) return;
+  config.SENDER_NAME = res.getResponseText().trim();
+
+  res = ui.prompt(
+    "Reply-To Address",
+    "Enter the email address replies should go to (e.g., 'hikes@forwards-teameurope.com'). Leave blank to use the sending account:",
+    ui.ButtonSet.OK_CANCEL,
+  );
+  if (res.getSelectedButton() !== ui.Button.OK) return;
+  config.REPLY_TO = res.getResponseText().trim();
+
+  saveConfig_(config);
+  ui.alert(
+    "Saved",
+    `Sender Name: "${config.SENDER_NAME || "(default)"}"\nReply-To: "${config.REPLY_TO || "(default)"}"\n\nThese will be applied to every email the script sends.`,
     ui.ButtonSet.OK,
   );
 }
@@ -265,9 +301,13 @@ function processEmailTrigger(
   const mapping = config.STATUS_MAPPINGS[status];
   if (mapping.timestampColumn && rowObject[mapping.timestampColumn]) return; // Already sent
 
+  const recipient = rowObject[config.RECIPIENT_COLUMN];
   try {
-    const recipient = rowObject[config.RECIPIENT_COLUMN];
     if (!recipient) throw new Error("Recipient email address is missing.");
+    if (!isValidEmail_(recipient))
+      throw new Error(`Recipient "${recipient}" is not a valid email address.`);
+    if (MailApp.getRemainingDailyQuota() <= 0)
+      throw new Error("Daily email quota exhausted. Try again tomorrow.");
 
     const globalParameters = getGlobalParameters_(config);
     const emailTemplate = getGmailTemplateFromDrafts_(mapping.draftSubject);
@@ -276,16 +316,9 @@ function processEmailTrigger(
       rowObject,
       globalParameters,
     );
-    const cleanRecipient = String(recipient).replace(/\s/g, "");
 
-    MailApp.sendEmail({
-      to: cleanRecipient,
-      subject: messageObject.subject,
-      body: messageObject.text,
-      htmlBody: messageObject.html,
-      attachments: emailTemplate.attachments,
-      inlineImages: emailTemplate.inlineImages,
-    });
+    sendMergedEmail_(recipient, messageObject, emailTemplate, config);
+    logSend_(recipient, messageObject.subject, "SENT", `Row ${rowNum} (auto)`);
 
     if (mapping.timestampColumn) {
       const timestampColIdx = headers.indexOf(mapping.timestampColumn);
@@ -295,9 +328,14 @@ function processEmailTrigger(
     }
   } catch (e) {
     Logger.log(`Error sending email for row ${rowNum}: ${e.message}`);
-    SpreadsheetApp.getUi().alert(
-      `An error occurred while sending an email: ${e.message}`,
-    );
+    logSend_(recipient || "(missing)", mapping.draftSubject, "FAILED", e.message);
+    try {
+      SpreadsheetApp.getUi().alert(
+        `An error occurred while sending an email: ${e.message}`,
+      );
+    } catch (uiError) {
+      // UI is not available in automatic trigger context; the Send Log captured it.
+    }
   }
 }
 
@@ -378,44 +416,56 @@ function sendBulkEmailForStatus() {
       return;
     }
 
-    ui.alert(
+    let remainingQuota = MailApp.getRemainingDailyQuota();
+    const startAlert = ui.alert(
       "Starting Bulk Send",
-      `Found ${recipientsToEmail.length} recipient(s). Sending now...`,
-      ui.ButtonSet.OK,
+      `Found ${recipientsToEmail.length} recipient(s). You have ${remainingQuota} email(s) left in today's quota.\n\n${
+        remainingQuota < recipientsToEmail.length
+          ? `WARNING: quota is lower than the number of recipients. Only the first ${remainingQuota} will be sent; the rest will be marked SKIPPED in the Send Log.\n\n`
+          : ""
+      }Continue?`,
+      ui.ButtonSet.OK_CANCEL,
     );
+    if (startAlert !== ui.Button.OK) return;
 
     const globalParameters = getGlobalParameters_(config);
     const emailTemplate = getGmailTemplateFromDrafts_(draftSubject);
     const sentLog = [];
+    let failed = 0;
+    let skipped = 0;
 
     recipientsToEmail.forEach((rowObject) => {
+      const recipient = rowObject[config.RECIPIENT_COLUMN];
       try {
-        const recipient = rowObject[config.RECIPIENT_COLUMN];
-        if (!recipient) return;
+        if (!recipient || !isValidEmail_(recipient)) {
+          failed++;
+          logSend_(recipient || "(missing)", draftSubject, "FAILED", "Invalid or missing email address.");
+          return;
+        }
+        if (remainingQuota <= 0) {
+          skipped++;
+          logSend_(recipient, draftSubject, "SKIPPED", "Daily quota exhausted.");
+          return;
+        }
 
         const messageObject = fillInTemplateFromObject_(
           emailTemplate.message,
           rowObject,
           globalParameters,
         );
-        MailApp.sendEmail({
-          to: String(recipient).replace(/\s/g, ""),
-          subject: messageObject.subject,
-          body: messageObject.text,
-          htmlBody: messageObject.html,
-          attachments: emailTemplate.attachments,
-          inlineImages: emailTemplate.inlineImages,
-        });
+        sendMergedEmail_(recipient, messageObject, emailTemplate, config);
+        remainingQuota--;
         sentLog.push(recipient);
+        logSend_(recipient, messageObject.subject, "SENT", "Bulk by status");
       } catch (e) {
-        Logger.log(
-          `Bulk send failed for ${rowObject[config.RECIPIENT_COLUMN]}: ${e.message}`,
-        );
+        failed++;
+        Logger.log(`Bulk send failed for ${recipient}: ${e.message}`);
+        logSend_(recipient || "(missing)", draftSubject, "FAILED", e.message);
       }
     });
 
     const htmlOutput = HtmlService.createHtmlOutput(
-      `<p>Bulk send complete.</p><textarea rows="15" cols="80" readonly>${sentLog.join("\n")}</textarea>`,
+      `<p>Bulk send complete. <b>Sent: ${sentLog.length}</b> &nbsp; Failed: ${failed} &nbsp; Skipped: ${skipped}.<br>Full details are in the "${LOG_SHEET}" sheet.</p><textarea rows="15" cols="80" readonly>${sentLog.join("\n")}</textarea>`,
     )
       .setWidth(600)
       .setHeight(350);
@@ -493,31 +543,41 @@ function sendBulkEmailToIndividuals() {
     const globalParameters = getGlobalParameters_(config);
     const emailTemplate = getGmailTemplateFromDrafts_(draftSubject);
     const sentLog = [];
+    let failed = 0;
+    let skipped = 0;
+    let remainingQuota = MailApp.getRemainingDailyQuota();
 
     targetEmails.forEach((email) => {
       try {
+        if (!isValidEmail_(email)) {
+          failed++;
+          logSend_(email, draftSubject, "FAILED", "Invalid email address.");
+          return;
+        }
+        if (remainingQuota <= 0) {
+          skipped++;
+          logSend_(email, draftSubject, "SKIPPED", "Daily quota exhausted.");
+          return;
+        }
         const rowObject = dataMap.get(email) || {}; // Will use global params if not found in sheet
         const messageObject = fillInTemplateFromObject_(
           emailTemplate.message,
           rowObject,
           globalParameters,
         );
-        MailApp.sendEmail({
-          to: email,
-          subject: messageObject.subject,
-          body: messageObject.text,
-          htmlBody: messageObject.html,
-          attachments: emailTemplate.attachments,
-          inlineImages: emailTemplate.inlineImages,
-        });
+        sendMergedEmail_(email, messageObject, emailTemplate, config);
+        remainingQuota--;
         sentLog.push(email);
+        logSend_(email, messageObject.subject, "SENT", "Bulk to individuals");
       } catch (e) {
+        failed++;
         Logger.log(`Bulk send failed for ${email}: ${e.message}`);
+        logSend_(email, draftSubject, "FAILED", e.message);
       }
     });
 
     const htmlOutput = HtmlService.createHtmlOutput(
-      `<p>Sent successfully to ${sentLog.length} users.</p><textarea rows="15" cols="80" readonly>${sentLog.join("\n")}</textarea>`,
+      `<p>Sent successfully to ${sentLog.length} user(s). Failed: ${failed} &nbsp; Skipped: ${skipped}.<br>Full details are in the "${LOG_SHEET}" sheet.</p><textarea rows="15" cols="80" readonly>${sentLog.join("\n")}</textarea>`,
     )
       .setWidth(600)
       .setHeight(350);
@@ -562,6 +622,52 @@ function debugLastEdit() {
     .setWidth(600)
     .setHeight(400);
   ui.showModalDialog(htmlOutput, "Last Edit Debug Data");
+}
+
+function isValidEmail_(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).replace(/\s/g, ""));
+}
+
+function sendMergedEmail_(recipient, messageObject, emailTemplate, config) {
+  const options = {
+    to: String(recipient).replace(/\s/g, ""),
+    subject: messageObject.subject,
+    body: messageObject.text,
+    htmlBody: messageObject.html,
+    attachments: emailTemplate.attachments,
+    inlineImages: emailTemplate.inlineImages,
+  };
+  if (config.SENDER_NAME) options.name = config.SENDER_NAME;
+  if (config.REPLY_TO) options.replyTo = config.REPLY_TO;
+  MailApp.sendEmail(options);
+}
+
+function getOrCreateLogSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(LOG_SHEET);
+  if (!sheet) {
+    sheet = ss.insertSheet(LOG_SHEET);
+    sheet
+      .getRange(1, 1, 1, 5)
+      .setValues([["Timestamp", "Recipient", "Subject", "Status", "Detail"]])
+      .setFontWeight("bold");
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function logSend_(recipient, subject, status, detail) {
+  try {
+    getOrCreateLogSheet_().appendRow([
+      new Date(),
+      recipient,
+      subject,
+      status,
+      detail || "",
+    ]);
+  } catch (e) {
+    Logger.log(`Could not write to log sheet: ${e.message}`);
+  }
 }
 
 function getGlobalParameters_(config) {
@@ -658,6 +764,104 @@ function getGmailTemplateFromDrafts_(subject_line) {
       `Oops - can't find or process Gmail draft with subject "${subject_line}". Error: ${e.message}`,
     );
   }
+}
+
+function checkQuota() {
+  const remaining = MailApp.getRemainingDailyQuota();
+  SpreadsheetApp.getUi().alert(
+    "Email Quota",
+    `You can still send ${remaining} more email(s) today.\n\nLimits are set by Google and reset every 24 hours:\n  - Consumer Gmail: 500 / day\n  - Google Workspace: 1,500 / day\n\nThese cannot be raised by the script. For higher volume or better deliverability, use a dedicated email service (Brevo, SendGrid, Amazon SES).`,
+    SpreadsheetApp.getUi().ButtonSet.OK,
+  );
+}
+
+function scanForBounces() {
+  const ui = SpreadsheetApp.getUi();
+  const config = getSavedConfig_();
+  if (!config || !config.MAILER_SHEET || !config.RECIPIENT_COLUMN) {
+    ui.alert("Please run 'Master Setup' first.");
+    return;
+  }
+
+  const daysPrompt = ui.prompt(
+    "Scan for Bounced Emails",
+    "How many days back should I scan your inbox for delivery failures? (default: 14)",
+    ui.ButtonSet.OK_CANCEL,
+  );
+  if (daysPrompt.getSelectedButton() !== ui.Button.OK) return;
+  let days = parseInt(daysPrompt.getResponseText().trim(), 10);
+  if (isNaN(days) || days <= 0) days = 14;
+
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(
+    config.MAILER_SHEET,
+  );
+  if (!sheet) return;
+
+  // Build the set of addresses we actually mailed, so we only flag real participants.
+  const headers = sheet
+    .getRange(1, 1, 1, sheet.getLastColumn())
+    .getValues()[0]
+    .map((h) => (typeof h === "string" ? h.trim() : h));
+  const emailColIdx = headers.indexOf(config.RECIPIENT_COLUMN);
+  if (emailColIdx === -1) {
+    ui.alert(
+      "Error",
+      `Email column "${config.RECIPIENT_COLUMN}" not found.`,
+      ui.ButtonSet.OK,
+    );
+    return;
+  }
+  const recipientSet = new Set(
+    sheet
+      .getRange(2, emailColIdx + 1, Math.max(sheet.getLastRow() - 1, 1), 1)
+      .getValues()
+      .flat()
+      .map((e) => String(e).replace(/\s/g, "").toLowerCase())
+      .filter((e) => e.includes("@")),
+  );
+
+  // Delivery-failure notices come back from the mail delivery subsystem.
+  const query =
+    'from:mailer-daemon OR subject:("Delivery Status Notification") OR subject:("Undelivered Mail Returned to Sender") OR subject:("Address not found") newer_than:' +
+    days +
+    "d";
+  const threads = GmailApp.search(query, 0, 300);
+
+  const bounced = new Set();
+  threads.forEach((thread) => {
+    thread.getMessages().forEach((msg) => {
+      const body = (msg.getPlainBody() || "").toLowerCase();
+      recipientSet.forEach((addr) => {
+        if (body.indexOf(addr) !== -1) bounced.add(addr);
+      });
+    });
+  });
+
+  if (bounced.size === 0) {
+    ui.alert(
+      "No Bounces Found",
+      `No delivery-failure messages matching your participant list were found in the last ${days} day(s).\n\nNote: this only catches HARD bounces that generate a reply. Silent spam-foldering and DKIM/DMARC drops do NOT bounce, so they will not appear here.`,
+      ui.ButtonSet.OK,
+    );
+    return;
+  }
+
+  const list = [...bounced].sort();
+  list.forEach((addr) =>
+    logSend_(
+      addr,
+      "(bounce scan)",
+      "BOUNCED",
+      `Delivery failure found within ${days} days`,
+    ),
+  );
+
+  const htmlOutput = HtmlService.createHtmlOutput(
+    `<p><b>${list.length}</b> participant address(es) had delivery failures in the last ${days} day(s). These did NOT arrive and have been logged as BOUNCED in the "${LOG_SHEET}" sheet.</p><textarea rows="15" cols="60" readonly>${list.join("\n")}</textarea>`,
+  )
+    .setWidth(550)
+    .setHeight(380);
+  ui.showModalDialog(htmlOutput, "Bounced Emails");
 }
 
 function checkGmailSentStatus() {
