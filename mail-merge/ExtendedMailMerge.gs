@@ -174,7 +174,7 @@ function setSenderIdentity() {
 
   res = ui.prompt(
     "Reply-To Address",
-    "Enter the email address replies should go to (e.g., 'hikes@forwards-teameurope.com'). Leave blank to use the sending account:",
+    "Enter the email address replies should go to (e.g., 'hikes@forwards-team.org'). Leave blank to use the sending account:",
     ui.ButtonSet.OK_CANCEL,
   );
   if (res.getSelectedButton() !== ui.Button.OK) return;
