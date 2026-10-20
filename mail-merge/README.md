@@ -97,9 +97,31 @@ You need two sheets in the same Google Sheets document:
 After reloading your spreadsheet, you will see a new **"Mail Merge Automation"** menu.
 
 - **Setup Edit Trigger:** Run this once during setup to activate the automation.
+- **View Current Config / Paste Existing Config:** Export and import the whole configuration as JSON — see [Reusing a configuration](#-reusing-a-configuration-in-another-spreadsheet) below.
 - **Check Sent Status vs. Gmail:** A utility to check who on your list has not received a specific email. It will ask for the email column and the subject line to check against your Gmail Sent folder.
 - **Debug Last Edit:** An essential troubleshooting tool. After editing a status, run this to see the exact data the script is trying to use for its placeholders. This helps you find typos in column names or other data issues.
 - **Clear Cache & Re-read General Sheet:** The script saves a copy of your `General` sheet data for performance. If you make changes to the `General` sheet, run this to force the script to read the new data immediately.
+
+---
+
+## 🔁 Reusing a Configuration in Another Spreadsheet
+
+Instead of re-entering every sheet name, column and status → draft mapping through the setup prompts, copy the configuration from a spreadsheet that is already set up:
+
+1.  In the **source** spreadsheet, run **`4. View Current Config`** and click **Copy JSON**.
+2.  In the **target** spreadsheet, run **`5. Paste Existing Config`**, paste the JSON, and click **Validate & Apply**.
+
+The pasted config **replaces** the target's configuration completely — sheet names, email/status columns, global parameters sheet, sender name, Reply-To, and all status → draft mappings — so both spreadsheets end up behaving identically.
+
+**What the dialog checks:**
+
+- **Errors (nothing is saved):** invalid JSON, a missing `MAILER_SHEET` / `RECIPIENT_COLUMN` / `STATUS_COLUMN`, or a status mapping without a `draftSubject`. Fix the JSON and apply again.
+- **Warnings (config is saved, but needs your attention):** the named sheet or column header does not exist in this spreadsheet, no Gmail draft matches a `draftSubject`, the Reply-To is not a valid address, or the automation trigger is not enabled yet. Unknown fields are ignored and listed.
+
+**Still to do manually in the target spreadsheet:**
+
+- Run **`Enable Automation Trigger`** once (triggers belong to the spreadsheet, not the config).
+- Make sure the Gmail drafts exist in the sending account, and that the `Status` column's dropdown offers the mapped status values.
 
 ---
 

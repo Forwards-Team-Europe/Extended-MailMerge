@@ -12,6 +12,16 @@
 const CONFIG_KEY = "MAIL_MERGE_CONFIG";
 const LOG_SHEET = "Send Log";
 
+// Top-level config fields (excluding STATUS_MAPPINGS) -> is the field required?
+const CONFIG_FIELDS_ = {
+  MAILER_SHEET: true,
+  RECIPIENT_COLUMN: true,
+  STATUS_COLUMN: true,
+  GENERAL_SHEET: false,
+  SENDER_NAME: false,
+  REPLY_TO: false,
+};
+
 // =================================================================
 // === CONFIGURATION MANAGEMENT ====================================
 // =================================================================
@@ -40,6 +50,7 @@ function onOpen() {
     .addItem("2. Add Auto-Trigger Mapping", "addTriggerMapping")
     .addItem("3. Set Sender Name & Reply-To", "setSenderIdentity")
     .addItem("4. View Current Config", "viewConfig")
+    .addItem("5. Paste Existing Config", "pasteConfig")
     .addSeparator()
     .addItem("Enable Automation Trigger", "createSpreadsheetEditTrigger")
     .addSeparator()
@@ -195,12 +206,282 @@ function viewConfig() {
     ui.alert("No configuration found. Run Master Setup.");
     return;
   }
-  const htmlOutput = HtmlService.createHtmlOutput(
-    `<p><b>Current Settings:</b></p><textarea rows="20" cols="60" readonly>${JSON.stringify(config, null, 2)}</textarea>`,
-  )
-    .setWidth(500)
-    .setHeight(400);
+  const html = `
+    <p><b>Current Settings:</b></p>
+    <textarea id="cfg" rows="18" cols="60" readonly>${escapeHtml_(JSON.stringify(config, null, 2))}</textarea>
+    <p>
+      <button onclick="copyConfig()">Copy JSON</button>
+      <span id="msg"></span>
+    </p>
+    <p style="font-size:11px;color:#666">To reuse these settings in another spreadsheet, copy this JSON and run "5. Paste Existing Config" there.</p>
+    <script>
+      function copyConfig() {
+        var ta = document.getElementById('cfg');
+        ta.select();
+        var ok = false;
+        try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+        document.getElementById('msg').textContent = ok
+          ? ' Copied to clipboard.'
+          : ' Could not copy automatically - press Ctrl/Cmd+C.';
+      }
+    </script>`;
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(520)
+    .setHeight(450);
   ui.showModalDialog(htmlOutput, "System Configuration");
+}
+
+/**
+ * Opens a dialog to paste a config JSON exported from another spreadsheet
+ * via "4. View Current Config". Applying it replaces this document's config,
+ * so sheet names, columns, sender identity and all status/draft mappings are
+ * migrated in one step instead of being re-entered through the setup prompts.
+ */
+function pasteConfig() {
+  const existing = getSavedConfig_();
+  const notice = existing
+    ? '<p style="color:#b00000"><b>This spreadsheet already has a configuration.</b> Applying will replace it completely.</p>'
+    : "";
+  const html = `
+    <p>Paste the JSON copied from "4. View Current Config" of another spreadsheet:</p>
+    ${notice}
+    <textarea id="in" rows="16" cols="66" placeholder='{ "MAILER_SHEET": "Mailer", ... }'></textarea>
+    <p>
+      <button id="btn" onclick="applyConfig()">Validate &amp; Apply</button>
+      <button onclick="google.script.host.close()">Close</button>
+    </p>
+    <div id="out" style="font-size:12px"></div>
+    <script>
+      function applyConfig() {
+        document.getElementById('btn').disabled = true;
+        document.getElementById('out').textContent = 'Validating...';
+        google.script.run
+          .withSuccessHandler(render)
+          .withFailureHandler(function (e) { render({ errors: [e.message], warnings: [], summary: '' }); })
+          .applyPastedConfig(document.getElementById('in').value);
+      }
+      function render(res) {
+        var out = document.getElementById('out');
+        out.textContent = '';
+        var failed = res.errors.length > 0;
+        var head = document.createElement('b');
+        head.style.color = failed ? '#b00000' : '#00701a';
+        head.textContent = failed
+          ? 'Nothing was applied - fix the following and try again:'
+          : res.summary;
+        out.appendChild(head);
+        var items = res.errors.concat(res.warnings);
+        if (items.length) {
+          var ul = document.createElement('ul');
+          items.forEach(function (text) {
+            var li = document.createElement('li');
+            li.textContent = text;
+            ul.appendChild(li);
+          });
+          out.appendChild(ul);
+        }
+        document.getElementById('btn').disabled = !failed;
+      }
+    </script>`;
+  SpreadsheetApp.getUi().showModalDialog(
+    HtmlService.createHtmlOutput(html).setWidth(560).setHeight(500),
+    "Paste Existing Config",
+  );
+}
+
+/**
+ * Called from the "Paste Existing Config" dialog. Saves the config only when
+ * it is structurally valid; anything that is valid but may not match this
+ * spreadsheet (missing sheet, missing header, missing draft) is returned as a
+ * warning so the user can fix it afterwards.
+ */
+function applyPastedConfig(jsonText) {
+  const result = validatePastedConfig_(jsonText);
+  if (!result.errors.length) {
+    saveConfig_(result.config);
+    CacheService.getScriptCache().remove("global_parameters");
+  }
+  return {
+    errors: result.errors,
+    warnings: result.warnings,
+    summary: result.summary,
+  };
+}
+
+function validatePastedConfig_(jsonText) {
+  const errors = [];
+  const warnings = [];
+  const fail = (message) => ({ errors: [message], warnings: [], summary: "" });
+
+  let raw;
+  try {
+    raw = JSON.parse(String(jsonText || "").trim());
+  } catch (e) {
+    return fail(`The pasted text is not valid JSON: ${e.message}`);
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return fail(
+      'The pasted JSON must be an object, exactly as shown in "4. View Current Config".',
+    );
+  }
+
+  const config = {};
+  Object.keys(CONFIG_FIELDS_).forEach((key) => {
+    const value = raw[key];
+    if (value === undefined || value === null || value === "") {
+      if (CONFIG_FIELDS_[key]) errors.push(`"${key}" is required but missing.`);
+      return;
+    }
+    if (typeof value !== "string") {
+      errors.push(`"${key}" must be text.`);
+      return;
+    }
+    config[key] = value.trim();
+  });
+
+  config.STATUS_MAPPINGS = {};
+  const mappings = raw.STATUS_MAPPINGS;
+  if (mappings === undefined || mappings === null) {
+    warnings.push(
+      'No "STATUS_MAPPINGS" in the pasted config - no automatic emails will be sent until mappings are added.',
+    );
+  } else if (typeof mappings !== "object" || Array.isArray(mappings)) {
+    errors.push(
+      '"STATUS_MAPPINGS" must be an object of status -> { draftSubject, timestampColumn }.',
+    );
+  } else {
+    Object.keys(mappings).forEach((status) => {
+      const mapping = mappings[status];
+      if (!mapping || typeof mapping !== "object" || Array.isArray(mapping)) {
+        errors.push(
+          `Mapping for status "${status}" must be an object with a "draftSubject".`,
+        );
+        return;
+      }
+      if (
+        typeof mapping.draftSubject !== "string" ||
+        !mapping.draftSubject.trim()
+      ) {
+        errors.push(`Mapping for status "${status}" has no "draftSubject".`);
+        return;
+      }
+      if (
+        mapping.timestampColumn !== undefined &&
+        mapping.timestampColumn !== null &&
+        typeof mapping.timestampColumn !== "string"
+      ) {
+        errors.push(
+          `"timestampColumn" for status "${status}" must be text (or omitted).`,
+        );
+        return;
+      }
+      if (!status.trim()) {
+        errors.push("A status mapping has an empty status name.");
+        return;
+      }
+      config.STATUS_MAPPINGS[status.trim()] = {
+        draftSubject: mapping.draftSubject.trim(),
+        timestampColumn: (mapping.timestampColumn || "").trim(),
+      };
+    });
+  }
+
+  const unknown = Object.keys(raw).filter(
+    (key) => !(key in CONFIG_FIELDS_) && key !== "STATUS_MAPPINGS",
+  );
+  if (unknown.length) {
+    warnings.push(`Ignored unknown field(s): ${unknown.join(", ")}.`);
+  }
+
+  if (errors.length) return { errors, warnings, summary: "" };
+
+  checkConfigAgainstDocument_(config, warnings);
+
+  const mappingCount = Object.keys(config.STATUS_MAPPINGS).length;
+  return {
+    errors,
+    warnings,
+    config,
+    summary: `Configuration applied: sheet "${config.MAILER_SHEET}", ${mappingCount} status mapping(s).`,
+  };
+}
+
+/**
+ * Non-blocking sanity checks: does everything the pasted config refers to
+ * actually exist in this spreadsheet and this Gmail account?
+ */
+function checkConfigAgainstDocument_(config, warnings) {
+  const ss = SpreadsheetApp.getActive();
+  const sheet = ss.getSheetByName(config.MAILER_SHEET);
+
+  if (!sheet) {
+    warnings.push(
+      `Sheet "${config.MAILER_SHEET}" does not exist here - rename your data sheet to match, or re-run Master Setup.`,
+    );
+  } else if (sheet.getLastColumn() < 1) {
+    warnings.push(`Sheet "${config.MAILER_SHEET}" has no header row yet.`);
+  } else {
+    const headers = sheet
+      .getRange(1, 1, 1, sheet.getLastColumn())
+      .getValues()[0]
+      .map((h) => (typeof h === "string" ? h.trim() : h));
+    const expected = [config.RECIPIENT_COLUMN, config.STATUS_COLUMN];
+    Object.keys(config.STATUS_MAPPINGS).forEach((status) => {
+      const timestampColumn = config.STATUS_MAPPINGS[status].timestampColumn;
+      if (timestampColumn && expected.indexOf(timestampColumn) === -1) {
+        expected.push(timestampColumn);
+      }
+    });
+    expected.forEach((header) => {
+      if (headers.indexOf(header) === -1) {
+        warnings.push(
+          `Column "${header}" was not found in the header row of "${config.MAILER_SHEET}".`,
+        );
+      }
+    });
+  }
+
+  if (config.GENERAL_SHEET && !ss.getSheetByName(config.GENERAL_SHEET)) {
+    warnings.push(
+      `Global parameters sheet "${config.GENERAL_SHEET}" does not exist here.`,
+    );
+  }
+
+  if (config.REPLY_TO && !isValidEmail_(config.REPLY_TO)) {
+    warnings.push(`Reply-To address "${config.REPLY_TO}" is not a valid email.`);
+  }
+
+  const subjects = Object.keys(config.STATUS_MAPPINGS).map(
+    (status) => config.STATUS_MAPPINGS[status].draftSubject,
+  );
+  if (subjects.length) {
+    const draftSubjects = GmailApp.getDrafts().map((draft) =>
+      draft.getMessage().getSubject(),
+    );
+    subjects.forEach((subject) => {
+      if (draftSubjects.indexOf(subject) === -1) {
+        warnings.push(
+          `No Gmail draft with the subject "${subject}" exists in this account.`,
+        );
+      }
+    });
+  }
+
+  const hasTrigger = ScriptApp.getProjectTriggers().some(
+    (trigger) => trigger.getHandlerFunction() === "handleEdit",
+  );
+  if (!hasTrigger) {
+    warnings.push(
+      'The automation trigger is not enabled here - run "Enable Automation Trigger".',
+    );
+  }
+}
+
+function escapeHtml_(text) {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function clearAllConfig() {
